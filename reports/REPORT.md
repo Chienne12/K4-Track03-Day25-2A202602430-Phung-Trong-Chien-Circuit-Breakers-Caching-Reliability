@@ -2,7 +2,7 @@
 
 **Họ tên:** Phùng Trọng Chiến · **MSV:** 2A202602430
 
-**Commit:** Chưa tạo commit nộp bài · **Điểm tự động:** 84/88 trên dữ liệu công khai; 4 điểm SLO còn chờ dữ liệu ẩn.
+**Commit:** `6a64f6f1816687a6ba586185883100053c5edcd7` · **Điểm tự động:** 84/88 trên dữ liệu công khai; 4 điểm SLO còn chờ dữ liệu ẩn.
 
 ## 1. Kết quả Game Day
 
