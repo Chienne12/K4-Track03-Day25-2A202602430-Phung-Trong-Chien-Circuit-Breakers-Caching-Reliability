@@ -2,7 +2,7 @@
 
 **Họ tên:** Phùng Trọng Chiến · **MSV:** 2A202602430
 
-**Commit:** `6a64f6f1816687a6ba586185883100053c5edcd7` · **Điểm tự động:** 84/88 trên dữ liệu công khai; 4 điểm SLO còn chờ dữ liệu ẩn.
+**Commit:** `6a64f6f1816687a6ba586185883100053c5edcd7` · **Điểm tự động:** 84/88
 
 ## 1. Kết quả Game Day
 
@@ -21,7 +21,9 @@
 | G6 | naive | 0,5170 | 4,836 | 12,344 | 11,344 | 2,009 | 0 | FAIL |
 | G6 | resilient | 1,0000 | 5,958 | 1,053 | 0,019 | 2,203 | 0 | PASS |
 
-Ở G1, client mới không vi phạm `retry-after` lần nào; bản naive vi phạm 36.027 lần. G5 không retry lỗi 400 và không failover vô ích. G6 không gửi tool call sang model thiếu tool calling.
+- **G1:** Client mới không vi phạm `retry-after` lần nào; bản naive vi phạm 36.027 lần.
+- **G5:** Không retry lỗi 400 và không failover vô ích.
+- **G6:** Không gửi tool call sang model thiếu tool calling.
 
 ## 2. Cấu hình client
 
@@ -38,15 +40,28 @@
 | `slow_call_s` / `open_duration_s` | 5 / 10 s | Bắt vùng chậm ở G4; sau 10 s thử lại để traffic quay về `alpha`. |
 | `half_open_max_probes` / `half_open_successes` | 2 / 2 | Chỉ cho hai phép thử đồng thời trước khi đóng breaker. |
 
-Luồng xử lý là **nhận lỗi → phân loại → cập nhật breaker nếu lỗi phản ánh sức khỏe provider → quyết định attempt kế tiếp**. Lỗi 400 dừng ngay. Hết quota đặt cooldown 300 s; 429 rate limit đặt cooldown đến `retry-after`, rồi chuyển provider. Lỗi 529, 5xx hoặc timeout có thể retry cùng provider sau full jitter nếu còn lượt, budget và deadline; nếu không thì chuyển provider. Khi mọi tuyến đều bận, client chỉ đợi một rate limit ngắn tối đa 5 s. Tool call chỉ đi `alpha`, `alpha-eu` hoặc `beta`.
+Luồng xử lý là **nhận lỗi → phân loại → cập nhật breaker nếu lỗi phản ánh sức khỏe provider → quyết định attempt kế tiếp**:
+
+- Lỗi 400: dừng ngay, không retry hoặc chuyển provider.
+- Hết quota: đặt cooldown 300 s cho provider đó, rồi chuyển provider.
+- 429 rate limit: đặt cooldown theo `retry-after`, rồi chuyển provider.
+- Lỗi 529, 5xx hoặc timeout: retry cùng provider sau full jitter nếu còn lượt, budget và deadline; nếu không thì chuyển provider.
+- Khi mọi tuyến đều bận: chỉ đợi một rate limit ngắn, tối đa 5 s.
+- Tool call: chỉ đi `alpha`, `alpha-eu` hoặc `beta`.
 
 ## 3. Ba thí nghiệm
 
-**Retry budget.** Tôi đặt `breaker.min_calls=1000000000` và cho phép 5 attempt/provider. Với budget bật, G2 có amplification 1,378, retry ratio 0,058, recovery 0 s; tắt budget thì các số lần lượt là 1,675, 0,495 và 25 s, availability giảm từ 0,9983 xuống 0,9666. Ở G3, retry ratio tăng từ 0,068 lên 0,159 khi tắt budget. Với breaker hoạt động bình thường, G2 chỉ còn amplification 1,044, nhưng budget vẫn chặn retry storm nếu breaker bị cấu hình sai hoặc chưa đủ mẫu để mở.
-
-**Timeout 30 giây.** G6 với timeout 8 s đạt availability 1,0000; timeout 30 s chỉ đạt 0,9488 và có 122 lượt `GiveUp("deadline")`. p95 của lượt thành công giảm từ 5,958 xuống 5,362 s vì các lượt treo bị loại khỏi mẫu p95, không phải vì trải nghiệm tốt hơn. G4 gần như không đổi: availability vẫn 1,0000, p95 từ 5,684 xuống 5,608 s, vì vùng chậm vẫn trả lời trước 30 s. Timeout nên đủ cho p99 lúc bình thường nhưng phải chừa thời gian chuyển provider trong deadline 30 s của người dùng.
-
-**Bỏ lọc tool calling.** Với G6, bỏ điều kiện `supports_tools` làm 235 tool call đi vào `gamma-mini`; cả 235 lượt kết thúc bằng `incompatible_model_output`. Availability giảm từ 1,0000 xuống 0,9015. Với sản phẩm, đó là 235 yêu cầu hoàn tiền mà model được chọn không thể thực hiện bước gọi công cụ cần thiết.
+- **Retry budget:** Tôi đặt `breaker.min_calls=1000000000` và cho phép 5 attempt/provider.
+  - G2: bật budget cho amplification 1,378, retry ratio 0,058, recovery 0 s; tắt budget thì các số là 1,675, 0,495 và 25 s. Availability giảm từ 0,9983 xuống 0,9666.
+  - G3: retry ratio tăng từ 0,068 lên 0,159 khi tắt budget.
+  - Khi breaker hoạt động bình thường, G2 chỉ còn amplification 1,044. Budget vẫn chặn retry storm nếu breaker bị cấu hình sai hoặc chưa đủ mẫu để mở.
+- **Timeout 30 giây:**
+  - G6: timeout 8 s đạt availability 1,0000; timeout 30 s chỉ đạt 0,9488 và có 122 lượt `GiveUp("deadline")`.
+  - p95 của lượt thành công giảm từ 5,958 xuống 5,362 s vì các lượt treo bị loại khỏi mẫu p95, không phải vì trải nghiệm tốt hơn.
+  - G4 gần như không đổi: availability vẫn 1,0000, p95 từ 5,684 xuống 5,608 s vì vùng chậm vẫn trả lời trước 30 s. Timeout cần đủ cho p99 lúc bình thường và chừa thời gian chuyển provider trong deadline 30 s của người dùng.
+- **Bỏ lọc tool calling:**
+  - Ở G6, bỏ điều kiện `supports_tools` làm 235 tool call đi vào `gamma-mini`; cả 235 lượt kết thúc bằng `incompatible_model_output`.
+  - Availability giảm từ 1,0000 xuống 0,9015. Đó là 235 yêu cầu hoàn tiền mà model được chọn không thể thực hiện bước gọi công cụ cần thiết.
 
 ## 4. Workflow hoàn tiền
 
@@ -55,7 +70,10 @@ Luồng xử lý là **nhận lỗi → phân loại → cập nhật breaker n�
 | naive | 1,0000 | 81 | 128 | 81 | 0 | 1.496.700 | 1,123 |
 | yours | 1,0000 | 66 | 0 | 0 | 0 | 0 | 0,303 |
 
-Mỗi bước được khoanh bằng khóa `(session_id, step)`. Khi chạy lại, executor tìm checkpoint của bước đó; có kết quả thì đọc tiếp, chưa có thì gọi service và lưu kết quả sau khi thành công. Idempotency key giữ nguyên qua retry và restart, nên payment hoặc email đã thực hiện nhưng mất response vẫn trả lại cùng kết quả. Chỉ có key thì các bước LLM trước đó vẫn bị làm lại sau crash; chỉ có checkpoint thì crash giữa lúc tiền đã đi và lúc ghi checkpoint có thể hoàn tiền lần nữa. Ghi checkpoint trước khi gọi payment còn nguy hiểm hơn: worker có thể chết trước khi tiền đi, trong khi lần sau lại bỏ qua bước này.
+- **Chạy và tiếp tục:** Mỗi bước dùng khóa `(session_id, step)`. Khi chạy lại, executor đọc checkpoint đã có; nếu chưa có thì gọi service, rồi lưu kết quả sau khi bước thành công.
+- **Idempotency key:** Khóa giữ nguyên qua retry và restart, nên payment hoặc email đã thực hiện nhưng mất response vẫn trả lại cùng kết quả.
+- **Vì sao cần cả hai:** Chỉ có key thì các bước LLM trước đó vẫn bị làm lại sau crash. Chỉ có checkpoint thì crash giữa lúc tiền đã đi và lúc ghi checkpoint có thể hoàn tiền lần nữa.
+- **Thứ tự ghi:** Nếu ghi checkpoint trước khi gọi payment, worker có thể chết trước khi tiền đi nhưng lần sau lại bỏ qua bước hoàn tiền.
 
 ## 5. Alerting và error budget
 
@@ -69,13 +87,14 @@ Mỗi bước được khoanh bằng khóa `(session_id, step)`. Khi chạy lạ
 | `night_spike` | không báo | page sai | không báo | — |
 | `small_bump` | không báo | page sai | không báo | — |
 
-Trong 30 ngày có 25.901.755 request; ngân sách lỗi cho SLO 99,5% là 129.508,8 request. Có 55.618 request lỗi, tương đương tiêu 42,95% ngân sách và còn 57,05%, nên chưa đóng băng release. `small_bump` kéo dài 20 phút với 12% lỗi: cửa sổ 1 giờ chỉ có khoảng 4% lỗi, burn rate khoảng 8×, dưới ngưỡng page 14,4×; cửa sổ 6 giờ cũng dưới ngưỡng 6×. Một blip như vậy không đáng đánh thức on-call.
+- **Ngân sách lỗi:** Trong 30 ngày có 25.901.755 request. Với SLO 99,5%, ngân sách là 129.508,8 request lỗi; thực tế có 55.618, đã tiêu 42,95% và còn 57,05%. Vì vậy chưa đóng băng release.
+- **`small_bump`:** Sự cố kéo dài 20 phút với 12% lỗi. Cửa sổ 1 giờ chỉ có khoảng 4% lỗi, burn rate khoảng 8×, dưới ngưỡng page 14,4×; cửa sổ 6 giờ cũng dưới ngưỡng 6×. Một blip như vậy không đáng đánh thức on-call.
 
 ## 6. Postmortem G2 — retry storm trên bản naive
 
-Trong băng G2, `alpha` mất 75% năng lực ở giây 120 và phục hồi ở giây 300. Client naive tiếp tục đẩy retry vào cùng provider; tải attempt tăng từ vài request/giây lên hơn 100 request/giây, làm hàng đợi không thoát được. Hệ thống chỉ đạt lại tỷ lệ thành công 95% sau thêm 155 giây tính từ lúc provider phục hồi.
-
-Có 2.362 lượt người dùng, trong đó 1.285 lượt thất bại; availability chỉ 45,60%. Sự cố đối với người dùng kéo dài xấp xỉ từ giây 120 đến giây 455. Nếu lấy mức 4 lượt/giây của bài lab cho cả tháng 30 ngày, ngân sách lỗi tháng là 51.840 lượt; riêng G2 đã tiêu 1.285/51.840, tức 2,48% ngân sách đó.
+- **Diễn biến:** `alpha` mất 75% năng lực ở giây 120 và phục hồi ở giây 300. Client naive tiếp tục đẩy retry vào cùng provider; tải attempt tăng từ vài request/giây lên hơn 100 request/giây. Tỷ lệ thành công chỉ trở lại mức 95% sau thêm 155 giây.
+- **Ảnh hưởng:** Trong 2.362 lượt người dùng có 1.285 lượt thất bại; availability là 45,60%. Người dùng chịu ảnh hưởng xấp xỉ từ giây 120 đến giây 455.
+- **Error budget:** Nếu giữ mức 4 lượt/giây của bài lab trong 30 ngày, ngân sách lỗi tháng là 51.840 lượt. Riêng G2 đã tiêu 1.285/51.840, tức 2,48% ngân sách đó.
 
 ![Attempts và tỷ lệ call thành công của G2](gameday/G2_overload_storm.png)
 
@@ -90,9 +109,11 @@ Có 2.362 lượt người dùng, trong đó 1.285 lượt thất bại; availab
 | 450 | Tải retry bắt đầu giảm | 16 attempt; 0/3 call thành công. |
 | 480 | Call thành công trở lại | 8 attempt; 11/11 call hoàn tất thành công. |
 
-Mất GPU là **tác nhân khởi phát**. **Nguyên nhân gốc** là ba tầng retry chồng nhau, delay cố định, không budget, không breaker và không chuyển provider. Chúng khuếch đại 3.481 logical call thành 34.475 attempt, tức 9,904 attempt/call. Client timeout không hủy công việc đang nằm trong hàng đợi provider; retry mới lại vào hàng đợi đó. Vì vậy sau giây 300, provider đã có đủ GPU nhưng vẫn xử lý nhiều request mà client cũ đã bỏ, trong khi retry mới tiếp tục giữ tải cao. Đây là vòng lặp tự duy trì khiến phục hồi chậm.
-
-Mô phỏng và CSV giúp tách rõ thời điểm provider hồi phục khỏi thời điểm người dùng thấy dịch vụ hồi phục. Việc chỉ retry trên `alpha` làm tình hình tệ hơn; `alpha-eu` và `beta` không được dùng dù còn năng lực. Client mới giữ amplification G2 ở 1,044 và recovery 0 s.
+- **Tác nhân khởi phát:** `alpha` mất 75% GPU.
+- **Nguyên nhân gốc:** Ba tầng retry chồng nhau, delay cố định, không budget, không breaker và không chuyển provider đã khuếch đại 3.481 logical call thành 34.475 attempt, tức 9,904 attempt/call.
+- **Vì sao không tự hồi phục ở giây 300:** Client timeout không hủy request đang nằm trong hàng đợi provider. Sau khi GPU phục hồi, provider vẫn xử lý nhiều request mà client đã bỏ; retry mới tiếp tục vào hàng đợi và giữ tải cao.
+- **Điều làm tệ hơn:** Bản naive chỉ retry trên `alpha`, không dùng `alpha-eu` và `beta` dù còn năng lực.
+- **Điều giúp phục hồi:** Client mới giới hạn retry và chuyển tuyến; trên G2, amplification còn 1,044 và recovery còn 0 s.
 
 | Hành động | Loại | Owner | Cách kiểm chứng |
 |---|---|---|---|
@@ -102,7 +123,8 @@ Mô phỏng và CSV giúp tách rõ thời điểm provider hồi phục khỏi 
 
 ## 7. Điểm yếu còn lại
 
-Ở G2, p95 của client mới vẫn là 11,217 s dù availability đạt 100%; một số lượt phải chờ timeout hoặc chuyển vùng. Tôi sẽ đo p99 bình thường và thời gian chờ hàng đợi theo provider để hạ timeout có kiểm soát, sau đó chạy lại G2 và G6; mục tiêu là giảm p95 mà vẫn giữ availability và recovery đạt ngưỡng.
+- **Điểm yếu:** Ở G2, p95 của client mới vẫn là 11,217 s dù availability đạt 100%; một số lượt phải chờ timeout hoặc chuyển vùng.
+- **Hướng xử lý:** Tôi sẽ đo p99 bình thường và thời gian chờ hàng đợi theo provider, hạ timeout có kiểm soát, rồi chạy lại G2 và G6. Mục tiêu là giảm p95 mà vẫn giữ availability và recovery đạt ngưỡng.
 
 ## 8. Cache
 
@@ -118,12 +140,18 @@ Mô phỏng và CSV giúp tách rõ thời điểm provider hồi phục khỏi 
 | `max_stale_s` | 600 s | Bao phủ 120 s mọi provider sập; tắt stale làm FAQ availability giảm từ 0,9645 xuống 0,8733. |
 | `max_entries` | 500 | Đủ chứa các câu FAQ trong băng; LRU giữ kích thước cache có giới hạn. |
 
-Khi tìm cache, tôi khoanh trước `prompt_version`, bỏ câu hỏi cá nhân, rồi chọn embedding giống nhất vượt ngưỡng. Hit còn trong TTL được trả ngay; hit đã cũ chỉ được dùng khi provider bỏ cuộc. Webhook xóa mọi câu trả lời dựa trên tài liệu vừa thay đổi.
+- **Tìm cache:** Khoanh trước `prompt_version`, bỏ câu hỏi cá nhân, rồi chọn embedding giống nhất vượt ngưỡng.
+- **Trả lời:** Hit còn trong TTL được trả ngay; hit đã cũ chỉ được dùng khi provider bỏ cuộc.
+- **Cập nhật nội dung:** Webhook xóa mọi câu trả lời dựa trên tài liệu vừa thay đổi.
 
-**Ngưỡng similarity.** Cùng TTL 60 s, ngưỡng 0,80 cho hit ratio 0,659, 175 câu sai và cost/lượt 0,978. Ở 0,95, các số là 0,652, 0 và 0,915; ở 0,97 là 0,579, 0 và 0,965. Các cặp gần về chữ nhưng khác ý như chính sách hoàn tiền và thời gian nhận tiền hoàn có thể bị gộp khi ngưỡng quá lỏng; cả 175 lỗi ở 0,80 thuộc `other_question`.
-
-**TTL.** Với TTL 30/60/300 s, số câu lỗi thời lần lượt là 2/3/95, hit ratio 0,592/0,652/0,731 và cost/lượt 0,955/0,915/0,863. Webhook ở giây 150 xóa câu trả lời dựa trên chính sách hoàn tiền đã đổi. Bảng phí ship đổi ở giây 480 không gửi webhook; chỉ thời hạn TTL buộc cache hỏi lại provider để lấy nội dung mới.
-
-**Stale-if-error.** Tắt cửa sổ stale làm FAQ availability từ 0,9645 giảm xuống 0,8733 và số câu phục vụ stale từ 157 xuống 0. Cache cũ chỉ là lối thoát khi mọi provider không trả lời; câu đã bị webhook vô hiệu hoặc khác `prompt_version` không được dùng lại.
-
-Câu hỏi cá nhân không được cache ngay cả khi khóa theo user: trạng thái đơn hàng và số tiền hoàn có thể đổi liên tục, còn câu gần giống nhau giữa các đơn dễ gây trả nhầm dữ liệu nhạy cảm. Trong lúc cache giữ FAQ availability ở 96,45%, on-call vẫn cần xem lỗi provider, trạng thái breaker, số lượt `stale_served` và tuổi câu trả lời; một dashboard chỉ nhìn tỷ lệ câu FAQ được trả sẽ che mất sự cố provider.
+- **Ngưỡng similarity:**
+  - Cùng TTL 60 s, ngưỡng 0,80 cho hit ratio 0,659, 175 câu sai và cost/lượt 0,978. Ở 0,95, các số là 0,652, 0 và 0,915; ở 0,97 là 0,579, 0 và 0,965.
+  - Các cặp gần về chữ nhưng khác ý, như chính sách hoàn tiền và thời gian nhận tiền hoàn, có thể bị gộp khi ngưỡng quá lỏng. Cả 175 lỗi ở 0,80 thuộc `other_question`.
+- **TTL:**
+  - Với TTL 30/60/300 s, số câu lỗi thời là 2/3/95, hit ratio là 0,592/0,652/0,731 và cost/lượt là 0,955/0,915/0,863.
+  - Webhook ở giây 150 xóa câu trả lời dựa trên chính sách hoàn tiền đã đổi. Bảng phí ship đổi ở giây 480 không gửi webhook; chỉ TTL buộc cache hỏi lại provider để lấy nội dung mới.
+- **Stale-if-error:**
+  - Tắt cửa sổ stale làm FAQ availability giảm từ 0,9645 xuống 0,8733 và số câu phục vụ stale từ 157 xuống 0.
+  - Cache cũ chỉ được dùng khi mọi provider không trả lời; câu đã bị webhook vô hiệu hoặc khác `prompt_version` không được dùng lại.
+- **Câu hỏi cá nhân:** Không cache ngay cả khi khóa theo user. Trạng thái đơn hàng và số tiền hoàn có thể đổi liên tục; câu gần giống nhau giữa các đơn cũng dễ gây trả nhầm dữ liệu nhạy cảm.
+- **Cảnh báo khi dùng cache:** Trong lúc cache giữ FAQ availability ở 96,45%, on-call vẫn cần xem lỗi provider, trạng thái breaker, số lượt `stale_served` và tuổi câu trả lời. Chỉ nhìn tỷ lệ FAQ được trả sẽ che mất sự cố provider.
